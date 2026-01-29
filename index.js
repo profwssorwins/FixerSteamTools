@@ -20,8 +20,6 @@ console.log(chalk.blue.bold('╚════════════════
 async function main() {
     try {
         const spinner = ora(chalk.yellow('Inicializando...')).start();
-
-        // 1. Ask for ManifestHub API Key
         spinner.stop();
         const { apiKey } = await inquirer.prompt([
             {
@@ -34,7 +32,6 @@ async function main() {
 
         const manifestHubKey = apiKey.trim();
 
-        // 2. Find Steam
         const steamPath = await findSteamPath();
         if (!steamPath) {
             spinner.fail(chalk.red('Steam não encontrada!'));
@@ -42,7 +39,7 @@ async function main() {
         }
         spinner.succeed(chalk.green(`Steam: ${steamPath}`));
 
-        // 3. Scan Installed Games
+        
         const stplugPath = path.join(steamPath, 'config', 'stplug-in');
         if (!await fs.pathExists(stplugPath)) {
             console.log(chalk.red(`\nPasta stplug-in não encontrada.`));
@@ -62,8 +59,6 @@ async function main() {
         for (const file of luaFiles) {
             const appId = file.replace('.lua', '');
             if (/^\d+$/.test(appId)) {
-                // Fetch name (optional, failing silently to keep speed if requested? No, user wants names)
-                // We'll fetch names in batch or lazily? Let's fetch now for the menu.
                 const name = await getGameName(appId);
                 detectedGames.push({ name, appId, value: appId });
             }
@@ -75,7 +70,6 @@ async function main() {
             process.exit(1);
         }
 
-        // 4. User Selection
         const { selectedGames } = await inquirer.prompt([
             {
                 type: 'checkbox',
@@ -93,18 +87,16 @@ async function main() {
 
         console.log(chalk.cyan(`\n✅ ${selectedGames.length} jogos selecionados.`));
 
-        // 5. Process Games with Rate Limiting
         for (let i = 0; i < selectedGames.length; i++) {
             const appId = selectedGames[i];
             const gameInfo = detectedGames.find(g => g.appId === appId);
 
             console.log(chalk.blue.bold(`\n[${i + 1}/${selectedGames.length}] Iniciando: ${gameInfo.name} (${appId})`));
 
-            // Rate Limit Delay (if not the first game)
             if (i > 0) {
-                console.log(chalk.yellow('\n⏳ Aguardando 5 minutos para evitar bloqueio da API...'));
+                console.log(chalk.yellow('\n⏳ Aguardando 1 minuto para evitar bloqueio da API...'));
                 await new Promise(resolve => {
-                    let seconds = 300; // 5 minutes
+                    let seconds = 60;
                     const timer = setInterval(() => {
                         process.stdout.write(`\rRestante: ${seconds}s   `);
                         seconds--;
@@ -117,11 +109,9 @@ async function main() {
                 });
             }
 
-            // Process single game
             await processGame(appId, steamPath, manifestHubKey);
         }
 
-        // 6. Restart Steam
         console.log(chalk.cyan('\n🔄 Reiniciando Steam...'));
         try {
             await restartSteam();
@@ -142,7 +132,6 @@ async function processGame(appId, steamPath, apiKey) {
     const spinner = ora(`Processando ${appId}...`).start();
 
     try {
-        // 1. Get Depot IDs from Lua
         const luaPath = path.join(steamPath, 'config', 'stplug-in', `${appId}.lua`);
         const content = await fs.readFile(luaPath, 'utf8');
         const matches = [...content.matchAll(/addappid\s*\(\s*(\d+)\s*,\s*\d+\s*,\s*"[a-fA-F0-9]+"/g)];
@@ -155,7 +144,6 @@ async function processGame(appId, steamPath, apiKey) {
 
         spinner.text = `Depots encontrados: ${depotIds.join(', ')}. Buscando Manifest IDs...`;
 
-        // 2. Get App Info from SteamCMD (Client Side)
         const appInfoResponse = await axios.get(`${STEAMCMD_API_URL}/${appId}`, { timeout: 30000 });
         const appData = appInfoResponse.data;
 
@@ -164,14 +152,12 @@ async function processGame(appId, steamPath, apiKey) {
             return;
         }
 
-        // 3. Match Manifests & Download
         const depotsObj = appData.data[appId].depots;
         let successCount = 0;
 
         for (const depotId of depotIds) {
             spinner.text = `Processando Depot ${depotId}...`;
 
-            // Get Manifest ID
             let manifestId = null;
             if (depotsObj[depotId] && depotsObj[depotId].manifests && depotsObj[depotId].manifests.public) {
                 manifestId = depotsObj[depotId].manifests.public.gid;
@@ -182,7 +168,6 @@ async function processGame(appId, steamPath, apiKey) {
                 continue;
             }
 
-            // Download Manifest with Retry
             let retries = 10;
             let success = false;
 
@@ -195,7 +180,6 @@ async function processGame(appId, steamPath, apiKey) {
                         headers: { 'User-Agent': 'Mozilla/5.0' }
                     });
 
-                    // Save files
                     const filename = `${depotId}_${manifestId}.manifest`;
                     const depotcachePath = path.join(steamPath, 'depotcache', filename);
                     const configDepotcachePath = path.join(steamPath, 'config', 'depotcache', filename);
@@ -216,7 +200,6 @@ async function processGame(appId, steamPath, apiKey) {
                     if (status === 429) {
                         console.log(chalk.yellow(`      ⚠️ Rate Limit (429). Aguardando 5s...`));
                         await new Promise(r => setTimeout(r, 5000));
-                        // Don't decrease retries for rate limit, just wait longer
                         continue;
                     }
 
@@ -229,8 +212,7 @@ async function processGame(appId, steamPath, apiKey) {
                     }
                 }
             }
-
-            // Short delay between depots
+            
             await new Promise(r => setTimeout(r, 1000));
         }
 
@@ -277,7 +259,6 @@ async function getGameName(appId) {
             return response.data[appId].data.name;
         }
     } catch (e) {
-        // Ignore error
     }
     return `AppID ${appId}`;
 }
@@ -288,35 +269,17 @@ async function restartSteam() {
     const execPromise = util.promisify(exec);
 
     try {
-        // Kill Steam
         await execPromise('taskkill /F /IM steam.exe');
         await new Promise(resolve => setTimeout(resolve, 2000));
 
-        // Start Steam
         const steamPath = await findSteamPath();
         if (steamPath) {
             const steamExe = path.join(steamPath, 'steam.exe');
             exec(`"${steamExe}"`);
         }
     } catch (error) {
-        // Steam might not be running, that's ok
-    }
-}
-
-async function getUserToken(discordId) {
-    try {
-        const { getMongoDB } = require('../Backend/services/mongodbService');
-        const jwt = require('jsonwebtoken');
-
-        const token = jwt.sign(
-            { discord_id: discordId },
-            process.env.JWT_SECRET || 'americankey-secret-key-change-in-production',
-            { expiresIn: '5m' }
-        );
-        return token;
-    } catch (error) {
-        throw new Error('User not found');
     }
 }
 
 main();
+
